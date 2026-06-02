@@ -1,0 +1,132 @@
+================================================================================
+CÓDIGO M (POWER QUERY) - DASHBOARD SRM E-COMMERCE
+================================================================================
+
+INSTRUÇÕES:
+1. Abra o Power BI Desktop
+2. Clique em "Obter Dados" → "Excel"
+3. Selecione o arquivo Base_SRM_Modelo.xlsx
+4. Selecione a tabela "tbVendas" e clique em "Transformar Dados"
+5. No Editor do Power Query, clique em "Editor Avançado"
+6. APAGUE TODO o conteúdo e COLE o código abaixo correspondente à tabela
+7. Repita para cada uma das 3 consultas (tbVendas, dCalendario, dCalendario_AnoAnterior)
+
+================================================================================
+CONSULTA 1: tbVendas (tabela fato com vendas)
+================================================================================
+Cole este código no Editor Avançado de uma nova consulta em branco.
+IMPORTANTE: Ajuste o caminho do arquivo na primeira linha para onde você salvou
+o Base_SRM_Modelo.xlsx no seu computador.
+
+let
+    Fonte = Excel.Workbook(File.Contents("C:\Caminho\Para\Base_SRM_Modelo.xlsx"), null, true),
+    tbVendas_Table = Fonte{[Item="tbVendas",Kind="Table"]}[Data],
+    TiposCorrigidos = Table.TransformColumnTypes(tbVendas_Table,{
+        {"Customer", type text},
+        {"Category SAP", type text},
+        {"EAN", Int64.Type},
+        {"GCAS", type text},
+        {"SUB", type text},
+        {"MG5", type text},
+        {"Mês", Int64.Type},
+        {"Ano", Int64.Type},
+        {"Valor", type number},
+        {"Volume", Int64.Type},
+        {"MSU", type number},
+        {"SU", type number}
+    }),
+    AddData = Table.AddColumn(TiposCorrigidos, "Data", each #date([Ano], [Mês], 1), type date),
+    AddAnoMes = Table.AddColumn(AddData, "AnoMes", each [Ano] * 100 + [Mês], Int64.Type),
+    AddTrimestre = Table.AddColumn(AddAnoMes, "Trimestre", each 
+        if [Mês] <= 3 then "JFM"
+        else if [Mês] <= 6 then "AMJ"
+        else if [Mês] <= 9 then "JAS"
+        else "OND", type text),
+    AddTrimestreAno = Table.AddColumn(AddTrimestre, "Trimestre_Ano", each [Trimestre] & Text.End(Text.From([Ano]), 2), type text)
+in
+    AddTrimestreAno
+
+
+================================================================================
+CONSULTA 2: dCalendario (tabela calendário - PERÍODO ATUAL)
+================================================================================
+Crie uma nova consulta em branco e cole:
+
+let
+    DataInicio = #date(2024, 1, 1),
+    DataFim = #date(2026, 12, 31),
+    NumDias = Duration.Days(DataFim - DataInicio) + 1,
+    ListaDatas = List.Dates(DataInicio, NumDias, #duration(1, 0, 0, 0)),
+    TabelaDatas = Table.FromList(ListaDatas, Splitter.SplitByNothing(), {"Data"}, null, ExtraValues.Error),
+    TipoData = Table.TransformColumnTypes(TabelaDatas, {{"Data", type date}}),
+    AddAno = Table.AddColumn(TipoData, "Ano", each Date.Year([Data]), Int64.Type),
+    AddMes = Table.AddColumn(AddAno, "Mês", each Date.Month([Data]), Int64.Type),
+    AddNomeMes = Table.AddColumn(AddMes, "NomeMes", each 
+        Date.MonthName([Data], "pt-BR"), type text),
+    AddAnoMes = Table.AddColumn(AddNomeMes, "AnoMes", each [Ano] * 100 + [Mês], Int64.Type),
+    AddMesAno = Table.AddColumn(AddAnoMes, "MesAno", each 
+        Text.Start(Date.MonthName([Data], "pt-BR"), 3) & "/" & Text.End(Text.From([Ano]), 2), type text),
+    AddTrimestre = Table.AddColumn(AddMesAno, "Trimestre", each 
+        if [Mês] <= 3 then "JFM"
+        else if [Mês] <= 6 then "AMJ"
+        else if [Mês] <= 9 then "JAS"
+        else "OND", type text),
+    AddTrimestreAno = Table.AddColumn(AddTrimestre, "Trimestre_Ano", each [Trimestre] & Text.End(Text.From([Ano]), 2), type text),
+    AddOrdemMes = Table.AddColumn(AddTrimestreAno, "OrdemMes", each 
+        [Ano] * 100 + [Mês], Int64.Type)
+in
+    AddOrdemMes
+
+
+================================================================================
+CONSULTA 3: dCalendario_AnoAnterior (calendário ESPELHADO - ano anterior)
+================================================================================
+Esta tabela é a chave da automação. Ela contém os mesmos dias, mas deslocados
+em -1 ano. Quando o usuário filtra JFM 2026, esta tabela aponta para JFM 2025.
+
+Crie uma nova consulta em branco e cole:
+
+let
+    Fonte = dCalendario,
+    AddDataAnoAnterior = Table.AddColumn(Fonte, "Data_AnoAnterior", each 
+        Date.AddYears([Data], -1), type date),
+    AddAnoAnt = Table.AddColumn(AddDataAnoAnterior, "Ano_Ant", each 
+        Date.Year([Data_AnoAnterior]), Int64.Type),
+    AddMesAnt = Table.AddColumn(AddAnoAnt, "Mês_Ant", each 
+        Date.Month([Data_AnoAnterior]), Int64.Type),
+    AddAnoMesAnt = Table.AddColumn(AddMesAnt, "AnoMes_Ant", each 
+        [Ano_Ant] * 100 + [Mês_Ant], Int64.Type),
+    Selecionar = Table.SelectColumns(AddAnoMesAnt, 
+        {"Data", "AnoMes", "Data_AnoAnterior", "Ano_Ant", "Mês_Ant", "AnoMes_Ant"})
+in
+    Selecionar
+
+
+================================================================================
+RELACIONAMENTOS A CRIAR (Modo Modelo - ícone das três tabelas conectadas)
+================================================================================
+
+Relacionamento 1 (ATIVO):
+- De: tbVendas[AnoMes]
+- Para: dCalendario[AnoMes]
+- Cardinalidade: Muitos para Um (*:1)
+- Direção do filtro: Único (dCalendario filtra tbVendas)
+
+Relacionamento 2 (INATIVO - será ativado por DAX):
+- De: tbVendas[AnoMes]
+- Para: dCalendario_AnoAnterior[AnoMes_Ant]
+- Cardinalidade: Muitos para Um (*:1)
+- Direção do filtro: Único
+- IMPORTANTE: Marque como INATIVO (vai ser usado via USERELATIONSHIP no DAX)
+
+Relacionamento 3 (ATIVO):
+- De: dCalendario_AnoAnterior[AnoMes]
+- Para: dCalendario[AnoMes]
+- Cardinalidade: Um para Um (1:1)
+- Direção do filtro: Ambas
+- Esse relacionamento permite que o slicer de dCalendario filtre também
+  dCalendario_AnoAnterior, fazendo o espelhamento automático.
+
+================================================================================
+FIM DO ARQUIVO 01
+================================================================================
