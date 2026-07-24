@@ -1,0 +1,65 @@
+import pandas as pd
+import numpy as np
+
+# ---------------------------------------------------------------
+# Configuracao
+# ---------------------------------------------------------------
+ARQ_SELL_IN = "sell_in.xlsx"
+ARQ_SELL_OUT = "sell_out.xlsx"
+ARQ_SAIDA = "Base_Mestre_Consolidada.xlsx"
+
+CHAVES = ["Data", "Customer", "Category SAP", "SUB", "MG5"]
+COLS_TEXTO = ["Customer", "Category SAP", "SUB", "MG5"]
+
+# Valores de erro do Excel que devem virar 0
+ERROS_EXCEL = ["#N/A", "#REF!", "#VALOR!", "#VALUE!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!", "N/A"]
+
+
+def carregar_e_tratar(caminho, sufixo):
+    df = pd.read_excel(caminho)
+
+    # Padronizacao de texto: remove espacos sobressalentes
+    for col in COLS_TEXTO:
+        df[col] = df[col].astype(str).str.strip()
+
+    # Padronizacao de data: aceita texto mm/aaaa ou data ja convertida pelo Excel
+    # e normaliza tudo para o primeiro dia do mes
+    df["Data"] = pd.to_datetime(df["Data"], errors="coerce", dayfirst=False)
+    df["Data"] = df["Data"].values.astype("datetime64[M]")
+
+    # Tratamento de erros nas metricas: erros de formula e NaN viram 0
+    for col in ["Valor", "MSU"]:
+        df[col] = df[col].replace(ERROS_EXCEL, np.nan)
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Renomeia metricas com o sufixo da base
+    df = df.rename(columns={"Valor": f"Valor_{sufixo}", "MSU": f"MSU_{sufixo}"})
+
+    # Agrupamento previo pelas chaves, somando metricas
+    metricas = [f"Valor_{sufixo}", f"MSU_{sufixo}"]
+    df = df.groupby(CHAVES, as_index=False)[metricas].sum()
+
+    return df
+
+
+# ---------------------------------------------------------------
+# Processamento
+# ---------------------------------------------------------------
+df_in = carregar_e_tratar(ARQ_SELL_IN, "SellIn")
+df_out = carregar_e_tratar(ARQ_SELL_OUT, "SellOut")
+
+# Full Outer Join pelas 4 chaves
+df_final = pd.merge(df_in, df_out, on=CHAVES, how="outer")
+
+# Preenche metricas ausentes da juncao com 0
+cols_metricas = ["Valor_SellIn", "MSU_SellIn", "Valor_SellOut", "MSU_SellOut"]
+df_final[cols_metricas] = df_final[cols_metricas].fillna(0)
+
+# Ordena por data e cliente
+df_final = df_final.sort_values(by=["Data", "Customer"]).reset_index(drop=True)
+
+# Exportacao sem indice
+df_final.to_excel(ARQ_SAIDA, index=False)
+
+print(f"Arquivo gerado: {ARQ_SAIDA}")
+print(f"Linhas: {len(df_final)}")
