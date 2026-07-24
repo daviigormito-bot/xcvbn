@@ -1,0 +1,69 @@
+import pandas as pd
+import numpy as np
+
+# ---------------------------------------------------------------
+# Configuracao
+# ---------------------------------------------------------------
+ARQ_SELL_IN = "sell_in.xlsx"
+ARQ_SELL_OUT = "sell_out.xlsx"
+ARQ_SAIDA = "Base_Mestre_Consolidada.xlsx"
+
+CHAVES = ["Ano", "Mes", "Customer", "Category SAP", "SUB", "MG5"]
+COLS_TEXTO = ["Customer", "Category SAP", "SUB", "MG5"]
+
+# Valores de erro do Excel que devem virar 0
+ERROS_EXCEL = ["#N/A", "#REF!", "#VALOR!", "#VALUE!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!", "N/A"]
+
+
+def carregar_e_tratar(caminho, sufixo):
+    df = pd.read_excel(caminho)
+
+    # Padronizacao de texto: remove espacos sobressalentes
+    for col in COLS_TEXTO:
+        df[col] = df[col].astype(str).str.strip()
+
+    # Ano e Mes ja vem em colunas separadas na base; garante que sejam numericos
+    df["Ano"] = pd.to_numeric(df["Ano"], errors="coerce").astype("Int64")
+    df["Mes"] = pd.to_numeric(df["Mes"], errors="coerce").astype("Int64")
+
+    # Tratamento de erros nas metricas: erros de formula e NaN viram 0
+    for col in ["Valor", "MSU"]:
+        df[col] = df[col].replace(ERROS_EXCEL, np.nan)
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+
+    # Renomeia metricas com o sufixo da base
+    df = df.rename(columns={"Valor": f"Valor_{sufixo}", "MSU": f"MSU_{sufixo}"})
+
+    # Agrupamento previo pelas chaves, somando metricas
+    metricas = [f"Valor_{sufixo}", f"MSU_{sufixo}"]
+    df = df.groupby(CHAVES, as_index=False)[metricas].sum()
+
+    return df
+
+
+# ---------------------------------------------------------------
+# Processamento
+# ---------------------------------------------------------------
+df_in = carregar_e_tratar(ARQ_SELL_IN, "SellIn")
+df_out = carregar_e_tratar(ARQ_SELL_OUT, "SellOut")
+
+# Full Outer Join pelas chaves
+df_final = pd.merge(df_in, df_out, on=CHAVES, how="outer")
+
+# Preenche metricas ausentes da juncao com 0
+cols_metricas = ["Valor_SellIn", "MSU_SellIn", "Valor_SellOut", "MSU_SellOut"]
+df_final[cols_metricas] = df_final[cols_metricas].fillna(0)
+
+# Coluna auxiliar de data (primeiro dia do mes) para uso no Power BI
+df_final["Data"] = pd.to_datetime(
+    dict(year=df_final["Ano"], month=df_final["Mes"], day=1), errors="coerce"
+)
+
+# Ordena por ano, mes e cliente
+df_final = df_final.sort_values(by=["Ano", "Mes", "Customer"]).reset_index(drop=True)
+
+# Exportacao sem indice
+df_final.to_excel(ARQ_SAIDA, index=False)
+
+print(f"Arquivo gerado: {ARQ_SAIDA}")
+print(f"Linhas: {len(df_final)}")
