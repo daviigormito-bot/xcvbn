@@ -1,0 +1,177 @@
+import pandas as pd
+import re
+import os
+
+# ==================== CONFIGURACAO ====================
+ARQUIVO_ENTRADA = "seu_arquivo.xlsx"  # Caminho do arquivo de entrada
+NOME_ABA        = "Sheet1"             # Nome da aba (ajuste se necessário)
+COLUNA_DESC     = "Short d"            # Coluna com a descrição (pode ser "Short d" ou outro nome)
+ARQUIVO_SAIDA   = "resultado_mecanicas_completo.xlsx"
+# =====================================================
+
+def identifica_mecanica(texto):
+    """Retorna 'Sell-in' ou 'Sell-out'"""
+    t = str(texto).lower()
+    if "sellout" in t or "sell-out" in t:
+        return "Sell-out"
+    elif "sellin" in t or "sell-in" in t:
+        return "Sell-in"
+    return ""
+
+def extrai_sellin(texto):
+    """
+    Extrai dados de Sell-in estruturados por mês.
+    Retorna list de dicts: [{'mes': 'Julho e Agosto', 'subcategoria': 'Premium Care', 'valor': '5%'}, ...]
+    """
+    dados = []
+    texto_str = str(texto)
+    
+    # Busca o bloco Sellin
+    sellin_match = re.search(r'Sellin:\s*(.*?)(?=Sellout:|$)', texto_str, re.IGNORECASE | re.DOTALL)
+    
+    if sellin_match:
+        bloco = sellin_match.group(1)
+        linhas = bloco.split('\n')
+        
+        mes_atual = None
+        for linha in linhas:
+            linha = linha.strip()
+            if not linha:
+                continue
+            
+            # Detecta linha com nome de mês (ex: "Julho e Agosto:" ou "Setembro:")
+            if any(m in linha for m in ['Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro', 'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho']):
+                # Extrai o nome do mês até o : ou |
+                match = re.search(r'([^:|]+(?:e\s+[^:|]+)?)', linha)
+                if match:
+                    mes_atual = match.group(1).strip()
+            
+            # Extrai porcentagens no formato "Nome - X%"
+            pares = re.findall(r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ\s]*?)\s*-\s*(\d+)\s*%', linha)
+            for subcat, pct in pares:
+                if mes_atual:
+                    dados.append({
+                        'mes': mes_atual,
+                        'subcategoria': subcat.strip(),
+                        'valor': f"{pct}%"
+                    })
+    
+    return dados
+
+def extrai_sellout(texto):
+    """
+    Extrai dados de Sell-out: produtos com preço.
+    Retorna list de dicts: [{'produto': 'Premium Care - 3%', 'valor': 'R$ X'}, ...]
+    """
+    dados = []
+    texto_str = str(texto)
+    
+    # Busca o bloco Sellout
+    sellout_match = re.search(r'Sellout:\s*(.*?)(?=Base de Cálculo:|$)', texto_str, re.IGNORECASE | re.DOTALL)
+    
+    if sellout_match:
+        bloco = sellout_match.group(1)
+        linhas = bloco.split('\n')
+        
+        for linha in linhas:
+            linha = linha.strip()
+            if not linha or 'Base de Cálculo' in linha:
+                continue
+            
+            # Extrai pares "Descrição - R$ Valor"
+            pares = re.findall(r'([A-Za-zÀ-ÿ0-9\s]+?)\s*-\s*R\$\s*([\d,\.]+)', linha, re.IGNORECASE)
+            for descricao, preco in pares:
+                descricao_limpa = descricao.strip()
+                preco_limpo = preco.replace(',', '.')
+                dados.append({
+                    'produto': descricao_limpa,
+                    'valor': f"R$ {preco_limpo}"
+                })
+    
+    return dados
+
+# ==================== LEITURA DO ARQUIVO ====================
+try:
+    df = pd.read_excel(ARQUIVO_ENTRADA, sheet_name=NOME_ABA)
+except FileNotFoundError:
+    print(f"❌ Erro: Arquivo '{ARQUIVO_ENTRADA}' não encontrado.")
+    print("   Ajuste o ARQUIVO_ENTRADA no código.")
+    exit()
+except Exception as e:
+    print(f"❌ Erro ao ler arquivo: {e}")
+    exit()
+
+print(f"✓ Arquivo carregado: {ARQUIVO_ENTRADA}")
+print(f"✓ Total de linhas: {len(df)}")
+print(f"\n📋 Colunas disponíveis:")
+for i, col in enumerate(df.columns):
+    print(f"   {i+1}. {col}")
+
+# ==================== PROCESSAMENTO ====================
+resultados = []
+contador_linhas = 0
+contador_sellin = 0
+contador_sellout = 0
+
+for idx, row in df.iterrows():
+    contador_linhas += 1
+    
+    # Extrai valores das colunas
+    mecanica = str(row.get('Mecani - Sellout', '')).strip()
+    category = str(row.get('Categori', '')).strip()
+    reco = str(row.get('Reco', '')).strip()
+    texto_desc = str(row.get(COLUNA_DESC, ''))
+    
+    # Processa Sell-in
+    dados_sellin = extrai_sellin(texto_desc)
+    for dado in dados_sellin:
+        resultados.append({
+            'Linha': idx + 1,
+            'Category': category,
+            'Reco': reco,
+            'Mecanica': 'Sell-in',
+            'Mes': dado['mes'],
+            'Subcategoria': dado['subcategoria'],
+            'Valor': dado['valor']
+        })
+        contador_sellin += 1
+    
+    # Processa Sell-out
+    dados_sellout = extrai_sellout(texto_desc)
+    for dado in dados_sellout:
+        resultados.append({
+            'Linha': idx + 1,
+            'Category': category,
+            'Reco': reco,
+            'Mecanica': 'Sell-out',
+            'Mes': 'N/A',
+            'Subcategoria': dado['produto'],
+            'Valor': dado['valor']
+        })
+        contador_sellout += 1
+
+# ==================== SALVANDO RESULTADO ====================
+if resultados:
+    df_resultado = pd.DataFrame(resultados)
+    df_resultado.to_excel(ARQUIVO_SAIDA, index=False, sheet_name="Mecanicas")
+    
+    print(f"\n✓ Processamento concluído com sucesso!")
+    print(f"  - Linhas processadas: {contador_linhas}")
+    print(f"  - Registros Sell-in extraídos: {contador_sellin}")
+    print(f"  - Registros Sell-out extraídos: {contador_sellout}")
+    print(f"  - Total de registros: {len(df_resultado)}")
+    print(f"\n✓ Arquivo salvo: {ARQUIVO_SAIDA}")
+    print(f"\n📊 Primeiros registros:")
+    print(df_resultado.head(10).to_string(index=False))
+else:
+    print(f"\n⚠️  Nenhum dado foi extraído. Verifique:")
+    print(f"   - O nome da aba ({NOME_ABA})")
+    print(f"   - O nome da coluna de descrição ({COLUNA_DESC})")
+    print(f"   - O padrão de dados na descrição")
+
+# Abre o arquivo automaticamente (descomente se quiser)
+# import subprocess
+# if os.name == 'nt':  # Windows
+#     os.startfile(ARQUIVO_SAIDA)
+# elif os.name == 'posix':  # macOS/Linux
+#     subprocess.Popen(['open', ARQUIVO_SAIDA])
