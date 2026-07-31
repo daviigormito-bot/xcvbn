@@ -1,0 +1,57 @@
+import pandas as pd
+import re
+
+# ==================== CONFIGURACAO ====================
+ARQUIVO_ENTRADA = "seu_arquivo.xlsx"   # caminho do arquivo
+NOME_ABA        = "Sheet8"             # nome da aba
+COLUNA_DESC     = "Short description"  # coluna com o texto
+ARQUIVO_SAIDA   = "resultado.xlsx"
+# =====================================================
+
+df = pd.read_excel(ARQUIVO_ENTRADA, sheet_name=NOME_ABA)
+
+def identifica_mecanica(texto):
+    t = str(texto).lower()
+    # procura a palavra que aparece logo apos "Sellin:" ou "Sellout" no bloco de %
+    if "sellout" in t or "sell-out" in t:
+        base = "Sell-out"
+    elif "sellin" in t or "sell-in" in t:
+        base = "Sell-in"
+    else:
+        base = ""
+    return base
+
+def extrai_subcategorias(texto):
+    """Retorna dict {subcategoria: percentual} a partir do padrao 'Nome - X%'."""
+    t = str(texto)
+    pares = {}
+    # captura 'Nome - 10%' onde Nome pode ter espacos, ate encontrar '|' ou fim
+    for m in re.finditer(r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ ]*?)\s*-\s*(\d+)\s*%', t):
+        nome = m.group(1).strip()
+        pct = int(m.group(2))
+        pares[nome] = pct
+    return pares
+
+# Aplica extracao linha a linha
+mecanicas = []
+lista_pares = []
+for texto in df[COLUNA_DESC]:
+    mecanicas.append(identifica_mecanica(texto))
+    lista_pares.append(extrai_subcategorias(texto))
+
+# Descobre todas as subcategorias existentes (uma coluna para cada)
+todas_subcats = []
+for pares in lista_pares:
+    for nome in pares:
+        if nome not in todas_subcats:
+            todas_subcats.append(nome)
+
+# Monta o dataframe de saida
+saida = df.copy()
+saida.insert(0, "Mecanica", mecanicas)
+for subcat in todas_subcats:
+    saida[subcat] = [pares.get(subcat, None) for pares in lista_pares]
+
+saida.to_excel(ARQUIVO_SAIDA, index=False)
+print(f"Arquivo gerado: {ARQUIVO_SAIDA}")
+print(f"Subcategorias encontradas: {todas_subcats}")
