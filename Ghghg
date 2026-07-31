@@ -1,0 +1,145 @@
+import pandas as pd
+import re
+
+# ==================== CONFIGURACAO ====================
+ARQUIVO_ENTRADA = "seu_arquivo.xlsx"   
+NOME_ABA        = "Sheet8"             
+COLUNA_DESC     = "Short description"  
+ARQUIVO_SAIDA   = "resultado_refatorado.xlsx"
+# =====================================================
+
+df = pd.read_excel(ARQUIVO_ENTRADA, sheet_name=NOME_ABA)
+
+def identifica_mecanica(texto):
+    """Retorna 'Sell-in' ou 'Sell-out'"""
+    t = str(texto).lower()
+    if "sellout" in t or "sell-out" in t:
+        return "Sell-out"
+    elif "sellin" in t or "sell-in" in t:
+        return "Sell-in"
+    return ""
+
+def extrai_sellin(texto):
+    """
+    Extrai dados de Sell-in estruturados por mês.
+    Retorna dict: {mês: {subcategoria: percentual}}
+    Ex: {'Julho e Agosto': {'Premium Care': 5, 'SuperSec': 5}, ...}
+    """
+    meses_dados = {}
+    
+    # Divide por padrão "Mês/Período:" ou por quebra de linha após mencionar mês
+    # Procura por padrões como "Julho e Agosto:", "Setembro:", etc
+    blocos = re.split(r'(?:Julho|Agosto|Setembro|Outubro|Novembro|Dezembro|Janeiro|Fevereiro|Março|Abril|Maio|Junho)', texto, flags=re.IGNORECASE)
+    
+    # Tenta extrair de forma mais robusta: busca por linhas com "Mês:" seguido de porcentagens
+    linhas = str(texto).split('\n')
+    mes_atual = None
+    
+    for linha in linhas:
+        linha = linha.strip()
+        if not linha:
+            continue
+        
+        # Detecta início de bloco de mês (ex: "Julho e Agosto:" ou "Setembro:")
+        if re.search(r'(Julho|Agosto|Setembro|Outubro|Novembro|Dezembro|Janeiro|Fevereiro|Março|Abril|Maio|Junho)', linha, re.IGNORECASE):
+            # Extrai o nome do período (até o : ou fim da linha)
+            match = re.search(r'([^:]+?)(?::|$)', linha)
+            if match:
+                mes_atual = match.group(1).strip()
+                meses_dados[mes_atual] = {}
+            # Se a linha também tiver porcentagens, processa
+            pares = re.findall(r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ ]*?)\s*-\s*(\d+)\s*%', linha)
+            for nome, pct in pares:
+                if mes_atual:
+                    meses_dados[mes_atual][nome.strip()] = int(pct)
+        else:
+            # Linha sem mês identificado, mas com porcentagens — associa ao último mês
+            pares = re.findall(r'([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ ]*?)\s*-\s*(\d+)\s*%', linha)
+            if pares and mes_atual:
+                for nome, pct in pares:
+                    meses_dados[mes_atual][nome.strip()] = int(pct)
+    
+    return meses_dados
+
+def extrai_sellout(texto):
+    """
+    Extrai dados de Sell-out: produtos com quantidade e preço.
+    Retorna dict: {produto: {quantidade: int, preco: float}}
+    Ex: {'935 Pants Mega': {'quantidade': 935, 'preco': 14.0}, ...}
+    """
+    produtos = {}
+    
+    # Padrão: "Número Descrição - R$ Valor"
+    # Ex: "935 Pants Mega - R$ 14"
+    pares = re.findall(r'(\d+)\s+([A-Za-zÀ-ÿ0-9\s]+?)\s*-\s*R\$\s*([\d,\.]+)', texto, re.IGNORECASE)
+    
+    for qtd, descricao, preco in pares:
+        chave = f"{qtd} {descricao.strip()}"
+        # Trata separador decimal: pode ser vírgula ou ponto
+        preco_limpo = float(preco.replace(',', '.'))
+        produtos[chave] = {'quantidade': int(qtd), 'preco': preco_limpo}
+    
+    return produtos
+
+# ==================== PROCESSAMENTO ====================
+resultados = []
+
+for idx, row in df.iterrows():
+    texto = str(row[COLUNA_DESC])
+    mecanica = identifica_mecanica(texto)
+    
+    if mecanica == "Sell-in":
+        meses = extrai_sellin(texto)
+        for mes, subcats in meses.items():
+            resultado = {
+                'Index': idx,
+                'Category': row.get('Category', ''),
+                'Reco': row.get('Reco', ''),
+                'Mecanica': mecanica,
+                'Periodo': mes
+            }
+            # Adiciona cada subcategoria como coluna
+            for subcat, pct in subcats.items():
+                resultado[subcat] = pct
+            resultados.append(resultado)
+    
+    elif mecanica == "Sell-out":
+        produtos = extrai_sellout(texto)
+        for produto, dados in produtos.items():
+            resultado = {
+                'Index': idx,
+                'Category': row.get('Category', ''),
+                'Reco': row.get('Reco', ''),
+                'Mecanica': mecanica,
+                'Produto': produto,
+                'Quantidade': dados['quantidade'],
+                'Preco_R$': dados['preco']
+            }
+            resultados.append(resultado)
+
+# Cria dataframe de resultado
+df_resultado = pd.DataFrame(resultados)
+
+# Se houver múltiplos meses no Sell-in, preenche com NaN onde não houver dados
+if 'Periodo' in df_resultado.columns:
+    # Identifica colunas de subcategorias (não são as de metadados)
+    colunas_meta = {'Index', 'Category', 'Reco', 'Mecanica', 'Periodo'}
+    colunas_subcat = [c for c in df_resultado.columns if c not in colunas_meta]
+    
+    # Preenche NaN nas subcategorias onde não há dados
+    for col in colunas_subcat:
+        if col not in df_resultado.columns:
+            df_resultado[col] = None
+
+df_resultado.to_excel(ARQUIVO_SAIDA, index=False)
+print(f"✓ Arquivo gerado: {ARQUIVO_SAIDA}")
+print(f"\nResumo:")
+print(f"  - Linhas processadas: {len(df_resultado)}")
+print(f"  - Sell-in encontrados: {len(df_resultado[df_resultado['Mecanica'] == 'Sell-in'])}")
+print(f"  - Sell-out encontrados: {len(df_resultado[df_resultado['Mecanica'] == 'Sell-out'])}")
+print(f"\nPrimeiras linhas:")
+print(df_resultado.head(10))
+
+# Abre automaticamente (descomente se quiser)
+# import os
+# os.startfile(ARQUIVO_SAIDA)
