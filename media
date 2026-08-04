@@ -1,0 +1,143 @@
+import pandas as pd
+import os
+import sys
+
+# --- 1. Definir o caminho do arquivo Excel de ENTRADA ---
+caminho_arquivo_excel_entrada = r"C:\Users\silva.d.6\OneDrive - Procter and Gamble\Desktop\limitecredito\basearaujoso.xlsx"
+
+# --- 2. Definir o nome do arquivo Excel de SAÍDA ---
+nome_arquivo_saida = "media_ean_com_filtro_y_n_detalhado_com_y_bbb.xlsx" # Nome atualizado para refletir a nova funcionalidade
+
+# --- 3. Determinar o diretório onde o script está sendo executado ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+caminho_arquivo_excel_saida = os.path.join(script_dir, nome_arquivo_saida)
+
+print(f"DEBUG: Caminho do script Python: {script_dir}")
+print(f"DEBUG: O arquivo de entrada esperado está em: {caminho_arquivo_excel_entrada}")
+print(f"DEBUG: O arquivo de saída *tentará ser salvo* em: {caminho_arquivo_excel_saida}")
+
+# --- 4. Verificar se o arquivo de ENTRADA existe ---
+if not os.path.exists(caminho_arquivo_excel_entrada):
+    print(f"\nERRO FATAL: O arquivo de entrada NÃO foi encontrado em '{caminho_arquivo_excel_entrada}'")
+    print("Por favor, verifique o caminho e o nome do arquivo e tente novamente.")
+    sys.exit(1)
+
+# --- 5. Carregar o arquivo Excel para um DataFrame do Pandas ---
+try:
+    df = pd.read_excel(caminho_arquivo_excel_entrada)
+    print("\n[OK] Arquivo Excel de entrada carregado com sucesso!")
+    print("\nPrimeiras 5 linhas do DataFrame (para verificação):")
+    print(df.head())
+    print("\nNomes das colunas no DataFrame:")
+    print(df.columns.tolist())
+
+    # --- 6. Preparação e Limpeza de Dados ---
+    coluna_ean = 'EAN'
+    coluna_preco_unitario = 'Sell Out Value Sales'
+    coluna_mes = 'mes'
+    coluna_filtro_y = 'y' # Coluna usada para filtrar 'y' ou 'n'
+
+    # Verifica se as colunas essenciais existem no DataFrame
+    colunas_necessarias = [coluna_ean, coluna_preco_unitario, coluna_mes, coluna_filtro_y]
+    for col in colunas_necessarias:
+        if col not in df.columns:
+            print(f"\nERRO FATAL: A coluna essencial '{col}' NÃO foi encontrada no arquivo Excel.")
+            print(f"Colunas disponíveis: {df.columns.tolist()}")
+            sys.exit(1)
+
+    # Converte a coluna de preço para tipo numérico
+    df[coluna_preco_unitario] = pd.to_numeric(df[coluna_preco_unitario], errors='coerce')
+    # Preenche quaisquer valores NaN com 0
+    df[coluna_preco_unitario].fillna(0, inplace=True)
+
+    # --- TRATAMENTO PARA A COLUNA 'mes' ---
+    df['temp_mes_dt'] = pd.to_datetime(df[coluna_mes], errors='coerce')
+    df[coluna_mes] = df['temp_mes_dt'].dt.strftime('%Y-%m')
+    df.drop('temp_mes_dt', axis=1, inplace=True)
+    print("\n[INFO] Coluna 'mes' padronizada para 'AAAA-MM'.")
+
+    # --- CRIAR A NOVA COLUNA DE VALOR TOTAL ---
+    nome_coluna_valor_total = 'Valor Total Calculado'
+    df[nome_coluna_valor_total] = df[coluna_preco_unitario]
+
+    # --- 7. Calcular os componentes da média por 'EAN' ---
+
+    # --- Cálculos para 'y' = 'n' ---
+    df_filtrado_para_soma_n = df[df[coluna_filtro_y].astype(str).str.lower() == 'n'].copy()
+    print(f"\n[INFO] DataFrame filtrado para a coluna '{coluna_filtro_y}' com valor 'n' para cálculo da soma.")
+    print(f"Número de linhas DEPOIS do filtro para soma (y=n): {len(df_filtrado_para_soma_n)}")
+
+    soma_valores_por_ean_n = df_filtrado_para_soma_n.groupby(coluna_ean)[nome_coluna_valor_total].sum()
+
+    # A contagem de meses distintos ainda é feita no DataFrame ORIGINAL (sem filtro de 'y' = 'n' ou 'y')
+    num_meses_distintos_por_ean_original = df.groupby(coluna_ean)[coluna_mes].nunique()
+
+    # Criar o DataFrame de resultados detalhados INICIAL
+    df_resultados_finais = soma_valores_por_ean_n.reset_index()
+    df_resultados_finais.rename(columns={nome_coluna_valor_total: 'Soma Valor Total (y=n) por EAN'}, inplace=True)
+
+    df_resultados_finais = df_resultados_finais.merge(
+        num_meses_distintos_por_ean_original.reset_index(),
+        on=coluna_ean,
+        how='left'
+    )
+    df_resultados_finais.rename(columns={coluna_mes: 'Quantidade Meses Contados (Total)'}, inplace=True)
+
+    # Calcula a média para 'y' = 'n'
+    df_resultados_finais['Media (y=n) por EAN e Meses Distintos'] = \
+        df_resultados_finais['Soma Valor Total (y=n) por EAN'] / \
+        df_resultados_finais['Quantidade Meses Contados (Total)'].replace(0, pd.NA)
+
+
+    # --- NOVO: Cálculos para 'y' = 'y' ---
+    df_filtrado_para_soma_y = df[df[coluna_filtro_y].astype(str).str.lower() == 'y'].copy()
+    print(f"\n[INFO] DataFrame filtrado para a coluna '{coluna_filtro_y}' com valor 'y' para cálculo da soma.")
+    print(f"Número de linhas DEPOIS do filtro para soma (y=y): {len(df_filtrado_para_soma_y)}")
+
+    soma_valores_por_ean_y = df_filtrado_para_soma_y.groupby(coluna_ean)[nome_coluna_valor_total].sum()
+
+    # Merge dos resultados 'y' com o DataFrame principal de resultados
+    df_resultados_finais = df_resultados_finais.merge(
+        soma_valores_por_ean_y.reset_index(),
+        on=coluna_ean,
+        how='left',
+        suffixes=('_n', '_y') # Sufixos para diferenciar as colunas de soma
+    )
+    df_resultados_finais.rename(columns={nome_coluna_valor_total: 'Soma Valor Total (y=y) por EAN'}, inplace=True)
+
+    # Calcula a média para 'y' = 'y'
+    df_resultados_finais['Media (y=y) por EAN e Meses Distintos'] = \
+        df_resultados_finais['Soma Valor Total (y=y) por EAN'] / \
+        df_resultados_finais['Quantidade Meses Contados (Total)'].replace(0, pd.NA)
+
+    # Preencher NaN nas novas colunas de soma e média com 0, se desejado
+    df_resultados_finais['Soma Valor Total (y=y) por EAN'].fillna(0, inplace=True)
+    df_resultados_finais['Media (y=y) por EAN e Meses Distintos'].fillna(0, inplace=True)
+
+
+    # --- 8. Exibir os resultados (no console) ---
+    print("\n--------------------------------------------------------------")
+    print("Resultados Detalhados por EAN (Soma filtrada por y='n' e y='y'):")
+    print("--------------------------------------------------------------")
+    print(df_resultados_finais)
+    print("\n[INFO] Tentando salvar o arquivo de saída...")
+
+    # --- 9. Salvar os resultados em um novo arquivo Excel ---
+    try:
+        df_resultados_finais.to_excel(caminho_arquivo_excel_saida, index=False)
+        print(f"\n[SUCESSO] Os resultados foram salvos em '{caminho_arquivo_excel_saida}'.")
+        if os.path.exists(caminho_arquivo_excel_saida):
+            print(f"[VERIFICADO] O arquivo '{nome_arquivo_saida}' existe no local especificado.")
+        else:
+            print(f"[ALERTA] O arquivo '{nome_arquivo_saida}' NÃO foi encontrado APÓS a tentativa de salvamento. Pode ser um problema de permissão ou outro erro silencioso.")
+
+    except Exception as e:
+        print(f"\nERRO AO SALVAR: Ocorreu um erro ao tentar salvar o arquivo Excel em '{caminho_arquivo_excel_saida}':")
+        print(f"Detalhes do erro: {e}")
+        print("Tente fechar o arquivo Excel se ele estiver aberto e verifique as permissões da pasta.")
+
+except Exception as e:
+    print(f"\nERRO GERAL: Ocorreu um erro inesperado durante o processamento:")
+    print(f"Detalhes do erro: {e}")
+    print(f"Tipo do erro: {type(e).__name__}")
+    print("Verifique os nomes das colunas no seu Excel, o formato dos dados ou o caminho do arquivo de entrada.")
