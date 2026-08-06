@@ -1,0 +1,150 @@
+
+import pandas as pd
+import os
+import sys
+
+# --- 1. Caminho do arquivo Excel de ENTRADA ---
+caminho_arquivo_excel_entrada = r"C:\Users\silva.d.6\OneDrive - Procter and Gamble\INDIANA\Apurações Indiana 01.26.xlsx"
+
+
+
+# --- 2. Nome do arquivo Excel de SAIDA ---
+nome_arquivo_saida = "media_ean_por_fiscal_year_dliddtank1234.xlsx"
+
+# --- 3. Diretorio do script ---
+script_dir = os.path.dirname(os.path.abspath(__file__))
+caminho_arquivo_excel_saida = os.path.join(script_dir, nome_arquivo_saida)
+
+print(f"DEBUG: Caminho do script Python: {script_dir}")
+print(f"DEBUG: Arquivo de entrada esperado: {caminho_arquivo_excel_entrada}")
+print(f"DEBUG: Arquivo de saida: {caminho_arquivo_excel_saida}")
+
+# --- 4. Verificar arquivo de ENTRADA ---
+if not os.path.exists(caminho_arquivo_excel_entrada):
+    print(f"\nERRO FATAL: Arquivo de entrada NAO encontrado em '{caminho_arquivo_excel_entrada}'")
+    sys.exit(1)
+
+# --- Definicao de colunas ---
+coluna_ean = 'FAMILIA'
+coluna_preco_unitario = 'sell out'
+coluna_mes = 'MÊS'
+coluna_ano = 'ANO'
+coluna_dli = 'dli'
+nome_coluna_valor = 'investimento'
+
+mapa_meses = {
+    'jan': 1, 'janeiro': 1, 'fev': 2, 'fevereiro': 2, 'mar': 3, 'marco': 3, 'março': 3,
+    'abr': 4, 'abril': 4, 'mai': 5, 'maio': 5, 'jun': 6, 'junho': 6,
+    'jul': 7, 'julho': 7, 'ago': 8, 'agosto': 8, 'set': 9, 'setembro': 9,
+    'out': 10, 'outubro': 10, 'nov': 11, 'novembro': 11, 'dez': 12, 'dezembro': 12
+}
+
+def parse_mes(valor):
+    s = str(valor).strip().lower()
+    num = pd.to_numeric(s, errors='coerce')
+    if pd.notna(num):
+        return int(num)
+    return mapa_meses.get(s, mapa_meses.get(s[:3], pd.NA))
+
+def calcular_fy(row):
+    ano = row['ano_num']
+    mes = row['mes_num']
+    inicio = ano if mes >= 7 else ano - 1
+    return f"FY{str(inicio)[-2:]}{str(inicio + 1)[-2:]}"
+
+# --- Preparacao de uma sheet ---
+def preparar(df):
+    colunas_necessarias = [coluna_ean, coluna_preco_unitario, coluna_mes, coluna_ano, coluna_dli]
+    for col in colunas_necessarias:
+        if col not in df.columns:
+            print(f"\nERRO FATAL: Coluna essencial '{col}' NAO encontrada.")
+            print(f"Colunas disponiveis: {df.columns.tolist()}")
+            sys.exit(1)
+
+    df[coluna_preco_unitario] = pd.to_numeric(df[coluna_preco_unitario], errors='coerce')
+    df[coluna_preco_unitario].fillna(0, inplace=True)
+
+    df['mes_num'] = df[coluna_mes].apply(parse_mes)
+    df['ano_num'] = pd.to_numeric(df[coluna_ano], errors='coerce')
+    df = df[df['mes_num'].notna() & df['ano_num'].notna()].copy()
+    df['mes_num'] = df['mes_num'].astype(int)
+    df['ano_num'] = df['ano_num'].astype(int)
+
+    df['mes_chave'] = df['ano_num'].astype(str) + '-' + df['mes_num'].astype(str).str.zfill(2)
+    df['Fiscal Year'] = df.apply(calcular_fy, axis=1)
+    df['is_dli'] = df[coluna_dli].astype(str).str.lower().str.strip() == 'y'
+    df[nome_coluna_valor] = df[coluna_preco_unitario]
+    return df
+
+# --- Calculo por agrupamento ---
+def calcular_medias(dados, chaves_group):
+    meses = dados.groupby(chaves_group)['mes_chave'].nunique().reset_index()
+    meses.rename(columns={'mes_chave': 'Quantidade Meses Contados (Total)'}, inplace=True)
+
+    soma_dli = dados[dados['is_dli']].groupby(chaves_group)[nome_coluna_valor].sum().reset_index()
+    soma_dli.rename(columns={nome_coluna_valor: 'Soma Valor Total (DLI) por EAN'}, inplace=True)
+
+    soma_ndli = dados[~dados['is_dli']].groupby(chaves_group)[nome_coluna_valor].sum().reset_index()
+    soma_ndli.rename(columns={nome_coluna_valor: 'Soma Valor Total (Nao-DLI) por EAN'}, inplace=True)
+
+    res = meses.merge(soma_dli, on=chaves_group, how='left')
+    res = res.merge(soma_ndli, on=chaves_group, how='left')
+
+    res['Soma Valor Total (DLI) por EAN'].fillna(0, inplace=True)
+    res['Soma Valor Total (Nao-DLI) por EAN'].fillna(0, inplace=True)
+
+    res['Media (DLI) por EAN e Meses'] = \
+        res['Soma Valor Total (DLI) por EAN'] / res['Quantidade Meses Contados (Total)'].replace(0, pd.NA)
+    res['Media (Nao-DLI) por EAN e Meses'] = \
+        res['Soma Valor Total (Nao-DLI) por EAN'] / res['Quantidade Meses Contados (Total)'].replace(0, pd.NA)
+
+    res['Media (DLI) por EAN e Meses'].fillna(0, inplace=True)
+    res['Media (Nao-DLI) por EAN e Meses'].fillna(0, inplace=True)
+    return res
+
+# --- Gera as 4 visoes de uma base ---
+def gerar_visoes(df):
+    df_por_fy = calcular_medias(df, ['Fiscal Year', coluna_ean])
+    df_por_fy.sort_values(['Fiscal Year', coluna_ean], inplace=True)
+
+    df_por_ano = calcular_medias(df, ['ano_num', coluna_ean])
+    df_por_ano.rename(columns={'ano_num': 'Ano'}, inplace=True)
+    df_por_ano.sort_values(['Ano', coluna_ean], inplace=True)
+
+    # Consolidado: uma linha por EAN + Fiscal Year + Ano, tudo junto
+    df_consolidado = calcular_medias(df, [coluna_ean, 'Fiscal Year', 'ano_num'])
+    df_consolidado.rename(columns={'ano_num': 'Ano'}, inplace=True)
+    df_consolidado.sort_values([coluna_ean, 'Fiscal Year', 'Ano'], inplace=True)
+
+    return df_consolidado, df_por_fy, df_por_ano
+
+# --- 5. Carregar e processar ---
+try:
+    df_bd = preparar(pd.read_excel(caminho_arquivo_excel_entrada, sheet_name='basef'))
+    print("\n[OK] Sheet 'bd' carregada e preparada.")
+
+    #df_cons_in = preparar(pd.read_excel(caminho_arquivo_excel_entrada, sheet_name='Apuração Araujo'))
+    print("[OK] Sheet 'consolidado' carregada e preparada.")
+
+    bd_consolidado, bd_por_fy, bd_por_ano = gerar_visoes(df_bd)
+    #con_consolidado, con_por_fy, con_por_ano = gerar_visoes(df_cons_in)
+
+    # --- 6. Salvar em Excel ---
+    try:
+        with pd.ExcelWriter(caminho_arquivo_excel_saida, engine='openpyxl') as writer:
+            # Resultados da sheet 'bd'
+            bd_consolidado.to_excel(writer, sheet_name='BD Consolidado', index=False)
+            bd_por_fy.to_excel(writer, sheet_name='BD Por Fiscal Year', index=False)
+            bd_por_ano.to_excel(writer, sheet_name='BD Por Ano', index=False)
+            # Resultados da sheet 'consolidado'
+            #con_consolidado.to_excel(writer, sheet_name='CONS Consolidado', index=False)
+            #con_por_fy.to_excel(writer, sheet_name='CONS Por Fiscal Year', index=False)
+            #con_por_ano.to_excel(writer, sheet_name='CONS Por Ano', index=False)
+        print(f"\n[SUCESSO] Resultados salvos em '{caminho_arquivo_excel_saida}'.")
+    except Exception as e:
+        print(f"\nERRO AO SALVAR: {e}")
+        print("Feche o arquivo se estiver aberto e verifique permissoes.")
+
+except Exception as e:
+    print(f"\nERRO GERAL: {e}")
+    print(f"Tipo: {type(e).__name__}")
